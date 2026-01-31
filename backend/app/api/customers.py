@@ -1,0 +1,187 @@
+from flask import request, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from app import db
+from app.api import api_bp
+from app.models.customer import Customer
+from app.models.user import User
+from app.schemas.customer import CustomerSchema
+
+def get_user_company_id():
+    """Obter company_id do usuário logado"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user or not user.company_id:
+        return None
+    return user.company_id
+
+@api_bp.route('/customers', methods=['GET'])
+@jwt_required()
+def list_customers():
+    """Listar clientes da empresa"""
+    company_id = get_user_company_id()
+    if not company_id:
+        return jsonify({'error': 'Usuário sem empresa associada'}), 403
+    
+    # Parâmetros de query
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    search = request.args.get('search', '')
+    
+    # Query base
+    query = Customer.query.filter_by(company_id=company_id)
+    
+    # Busca por nome, email ou telefone
+    if search:
+        query = query.filter(
+            db.or_(
+                Customer.name.ilike(f'%{search}%'),
+                Customer.email.ilike(f'%{search}%'),
+                Customer.phone.ilike(f'%{search}%')
+            )
+        )
+    
+    # Paginação
+    pagination = query.order_by(Customer.created_at.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    
+    return jsonify({
+        'customers': [c.to_dict() for c in pagination.items],
+        'total': pagination.total,
+        'page': page,
+        'per_page': per_page,
+        'pages': pagination.pages
+    }), 200
+
+@api_bp.route('/customers', methods=['POST'])
+@jwt_required()
+def create_customer():
+    """Criar novo cliente"""
+    company_id = get_user_company_id()
+    if not company_id:
+        return jsonify({'error': 'Usuário sem empresa associada'}), 403
+    
+    data = request.get_json()
+    
+    # Validar dados
+    errors = CustomerSchema.validate(data)
+    if errors:
+        return jsonify({'errors': errors}), 400
+    
+    try:
+        customer = Customer(
+            name=data['name'],
+            email=data.get('email'),
+            phone=data['phone'],
+            cpf=data.get('cpf'),
+            address=data.get('address'),
+            notes=data.get('notes'),
+            company_id=company_id
+        )
+        
+        db.session.add(customer)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Cliente criado com sucesso',
+            'customer': customer.to_dict()
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Erro ao criar cliente: {str(e)}'}), 500
+
+@api_bp.route('/customers/<int:customer_id>', methods=['GET'])
+@jwt_required()
+def get_customer(customer_id):
+    """Obter detalhes de um cliente"""
+    company_id = get_user_company_id()
+    if not company_id:
+        return jsonify({'error': 'Usuário sem empresa associada'}), 403
+    
+    customer = Customer.query.filter_by(
+        id=customer_id, 
+        company_id=company_id
+    ).first()
+    
+    if not customer:
+        return jsonify({'error': 'Cliente não encontrado'}), 404
+    
+    return jsonify(customer.to_dict()), 200
+
+@api_bp.route('/customers/<int:customer_id>', methods=['PUT'])
+@jwt_required()
+def update_customer(customer_id):
+    """Atualizar cliente"""
+    company_id = get_user_company_id()
+    if not company_id:
+        return jsonify({'error': 'Usuário sem empresa associada'}), 403
+    
+    customer = Customer.query.filter_by(
+        id=customer_id,
+        company_id=company_id
+    ).first()
+    
+    if not customer:
+        return jsonify({'error': 'Cliente não encontrado'}), 404
+    
+    data = request.get_json()
+    
+    # Validar dados
+    errors = CustomerSchema.validate(data, is_update=True)
+    if errors:
+        return jsonify({'errors': errors}), 400
+    
+    try:
+        # Atualizar campos
+        if 'name' in data:
+            customer.name = data['name']
+        if 'email' in data:
+            customer.email = data['email']
+        if 'phone' in data:
+            customer.phone = data['phone']
+        if 'cpf' in data:
+            customer.cpf = data['cpf']
+        if 'address' in data:
+            customer.address = data['address']
+        if 'notes' in data:
+            customer.notes = data['notes']
+        if 'is_active' in data:
+            customer.is_active = data['is_active']
+        
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Cliente atualizado com sucesso',
+            'customer': customer.to_dict()
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Erro ao atualizar cliente: {str(e)}'}), 500
+
+@api_bp.route('/customers/<int:customer_id>', methods=['DELETE'])
+@jwt_required()
+def delete_customer(customer_id):
+    """Deletar cliente"""
+    company_id = get_user_company_id()
+    if not company_id:
+        return jsonify({'error': 'Usuário sem empresa associada'}), 403
+    
+    customer = Customer.query.filter_by(
+        id=customer_id,
+        company_id=company_id
+    ).first()
+    
+    if not customer:
+        return jsonify({'error': 'Cliente não encontrado'}), 404
+    
+    try:
+        db.session.delete(customer)
+        db.session.commit()
+        
+        return jsonify({'message': 'Cliente deletado com sucesso'}), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Erro ao deletar cliente: {str(e)}'}), 500
